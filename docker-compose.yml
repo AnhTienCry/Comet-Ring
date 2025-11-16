@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: comet-ring-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: comet-ring
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - comet-ring-network
+
+  backend:
+    build: ./backend
+    container_name: comet-ring-backend
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/comet-ring
+      - JWT_SECRET=comet-ring-secret-key-change-in-production
+      - BACKEND_URL=http://localhost:4000
+    depends_on:
+      - mongo
+    volumes:
+      - ./backend/uploads:/app/uploads
+    networks:
+      - comet-ring-network
+
+  frontend:
+    container_name: comet-ring-frontend
+    restart: unless-stopped
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: "http://localhost:4000/api"
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - comet-ring-network
+
+volumes:
+  mongo_data:
+
+networks:
+  comet-ring-network:
+    driver: bridge
