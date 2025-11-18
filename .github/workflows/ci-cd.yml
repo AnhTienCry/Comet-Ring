@@ -135,21 +135,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # STEP 1 — Decode Base64 PEM → id_rsa
-      - name: Write SSH key and add host
+      # STEP 1 — CREATE PRIVATE KEY (~/.ssh/id_rsa)
+      - name: Prepare SSH key
         run: |
-          set -e
-          # ensure directory exists
           mkdir -p ~/.ssh
 
-          # Support two secret formats:
-          # - EC2_SSH_KEY_B64: base64-encoded private key (if you uploaded encoded)
-          # - EC2_SSH_KEY: raw PEM private key (recommended)
-          if [ -n "${{ secrets.EC2_SSH_KEY_B64 }}" ]; then
-            echo "Decoding base64 SSH key into ~/.ssh/id_rsa"
-            echo "${{ secrets.EC2_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/id_rsa
+          if [ -n "${{ secrets.EC2_SSH_KEY_BASE64 }}" ]; then
+            echo "Decoding base64 key..."
+            echo "${{ secrets.EC2_SSH_KEY_BASE64 }}" | base64 -d > ~/.ssh/id_rsa
           else
-            echo "Writing raw SSH key into ~/.ssh/id_rsa (stripping CRLF)"
+            echo "Using raw PEM, normalizing line endings..."
             printf "%s" "${{ secrets.EC2_SSH_KEY }}" | sed 's/\r$//' > ~/.ssh/id_rsa
           fi
 
@@ -216,4 +211,4 @@ jobs:
         run: |
           echo "Deployment complete!"
           echo "Frontend: http://${{ secrets.EC2_HOST }}"
-          echo "Backend:  http://${{ secrets.EC2_HOST }}:4000"
+          echo "Backend: http://${{ secrets.EC2_HOST }}:4000"
