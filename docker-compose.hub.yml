@@ -7,24 +7,22 @@ services:
     restart: unless-stopped
     ports:
       - "27017:27017"
-    environment:
-      MONGO_INITDB_DATABASE: comet-ring
     volumes:
       - mongo_data:/data/db
     networks:
       - comet-ring-network
 
   backend:
-    image: anhtiencry/comet-ring:backend
+    image: anhtiencry/comet-ring-backend:latest
     container_name: comet-ring-backend
     restart: unless-stopped
     ports:
       - "4000:4000"
     environment:
-      - NODE_ENV=production
-      - MONGODB_URI=mongodb://mongo:27017/comet-ring
-      - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
-      - BACKEND_URL=http://localhost:4000
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/comet-ring
+      JWT_SECRET: ${JWT_SECRET}
+      BACKEND_URL: http://localhost:4000
     depends_on:
       - mongo
     volumes:
@@ -33,7 +31,7 @@ services:
       - comet-ring-network
 
   frontend:
-    image: anhtiencry/comet-ring:frontend
+    image: anhtiencry/comet-ring-frontend:latest
     container_name: comet-ring-frontend
     restart: unless-stopped
     ports:
