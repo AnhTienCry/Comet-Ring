@@ -30,27 +30,24 @@ jobs:
           --health-retries 5
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
-        working-directory: ./backend
+        working-directory: backend
         run: npm ci
 
-      - name: Run tests
-        working-directory: ./backend
+      - name: Run backend tests
+        working-directory: backend
         env:
           MONGODB_URI: mongodb://localhost:27017/comet-ring-test
-          JWT_SECRET: test-secret
-          NODE_ENV: test
         run: npm test
+
 
   # Job 2: Test Frontend
   test-frontend:
@@ -58,103 +55,115 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        working-directory: ./frontend
+        working-directory: frontend
         run: npm ci
 
-      - name: Run tests
-        working-directory: ./frontend
+      - name: Run frontend tests
+        working-directory: frontend
         run: npm test
 
-      - name: Build
-        working-directory: ./frontend
+      - name: Build frontend
+        working-directory: frontend
         env:
           VITE_API_BASE_URL: http://${{ secrets.EC2_HOST }}:4000/api
         run: npm run build
 
-  # Job 3: Build and Push Docker Images
+
+  # Job 3: Build & Push Docker Images
   build-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
     needs: [test-backend, test-frontend]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
+    if: github.ref == 'refs/heads/main'
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Backend
+      - name: Build & Push Backend
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
-          file: ./backend/Dockerfile
+          context: backend
+          file: backend/Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-backend:latest
 
-      - name: Build and push Frontend
+      - name: Build & Push Frontend
         uses: docker/build-push-action@v5
         with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
+          context: frontend
+          file: frontend/Dockerfile
           push: true
           build-args: |
             VITE_API_BASE_URL=http://${{ secrets.EC2_HOST }}:4000/api
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-frontend:latest
+
 
   # Job 4: Deploy to EC2
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: build-push
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    if: github.ref == 'refs/heads/main'
 
-      # STEP 1 — CREATE PRIVATE KEY (~/.ssh/id_rsa)
+    steps:
+      - uses: actions/checkout@v4
+
+      # STEP 1: Fix SSH key
       - name: Prepare SSH key
         run: |
           mkdir -p ~/.ssh
-
+          
           if [ -n "${{ secrets.EC2_SSH_KEY_BASE64 }}" ]; then
-            echo "Decoding base64 key..."
             echo "${{ secrets.EC2_SSH_KEY_BASE64 }}" | base64 -d > ~/.ssh/id_rsa
           else
-            echo "Using raw PEM, normalizing line endings..."
             printf "%s" "${{ secrets.EC2_SSH_KEY }}" | sed 's/\r$//' > ~/.ssh/id_rsa
           fi
 
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Create deployment files
+
+      # STEP 2: Auto install Docker + Docker Compose (nếu chưa có)
+      - name: Install Docker & Docker Compose on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "
+            set -e
+            if ! command -v docker >/dev/null 2>&1; then
+              echo 'Installing Docker...'
+              curl -fsSL https://get.docker.com | sh
+            fi
+
+            if ! command -v docker-compose >/dev/null 2>&1; then
+              echo 'Installing Docker Compose...'
+              sudo curl -L 'https://github.com/docker/compose/releases/latest/download/docker-compose-Linux-x86_64' -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
+          "
+
+
+      # STEP 3: Upload docker-compose.yml + deploy script
+      - name: Upload deployment files
         run: |
           mkdir -p deploy
-          
+
           cat > deploy/docker-compose.yml << 'EOF'
           version: '3.8'
           services:
@@ -185,30 +194,33 @@ jobs:
           #!/bin/bash
           set -e
           cd /home/ubuntu/comet-ring
-          docker compose pull
-          docker compose down
-          docker compose up -d
+          docker-compose pull
+          docker-compose down
+          docker-compose up -d
           EOF
 
           chmod +x deploy/deploy.sh
 
-      - name: Copy files to EC2
-        run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "mkdir -p ~/comet-ring"
-          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/comet-ring/
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/ubuntu/comet-ring/
 
+
+      # STEP 4: Run deployment
       - name: Deploy on EC2
         run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "cd ~/comet-ring && bash deploy.sh"
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} \
+            "cd /home/ubuntu/comet-ring && bash deploy.sh"
 
-      - name: Verify deployment
+
+      # STEP 5: Verify
+      - name: Verify Deployment
         run: |
           sleep 5
           curl -f http://${{ secrets.EC2_HOST }}:4000/api/health
           curl -f http://${{ secrets.EC2_HOST }}
 
-      - name: Deployment summary
+      - name: Summary
         run: |
-          echo "Deployment complete!"
+          echo "🚀 Deployment successful!"
           echo "Frontend: http://${{ secrets.EC2_HOST }}"
-          echo "Backend: http://${{ secrets.EC2_HOST }}:4000"
+          echo "Backend:  http://${{ secrets.EC2_HOST }}:4000"
