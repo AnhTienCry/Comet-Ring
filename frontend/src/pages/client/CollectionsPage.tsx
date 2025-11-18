@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type JSX } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import api from '../../services/api';
 import type { Collection, Product } from '../../types/catalog';
 import { mockCollections, mockProducts } from '../../data/mockData';
 import { fetchCollections, fetchProducts } from '../../services/api';

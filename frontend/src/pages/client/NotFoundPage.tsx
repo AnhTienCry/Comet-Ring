@@ -1,4 +1,3 @@
-import type { JSX } from 'react';
 import { Link } from 'react-router-dom';
 import type { ReactElement } from 'react';
 

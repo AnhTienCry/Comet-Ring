@@ -1,11 +1,10 @@
-import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { useMemo, type JSX } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { useMemo } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import Logo from '../shared/Logo';
 
-const Header = (): JSX.Element => {
+const Header = (): JSX.Element | null => {
   const location = useLocation();
-  const navigate = useNavigate();
   const { isAuthenticated, user, logout } = useAuth();
 
   const isCheckout = useMemo(() => location.pathname.startsWith('/checkout'), [location.pathname]);

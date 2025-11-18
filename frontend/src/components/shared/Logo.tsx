@@ -1,5 +1,3 @@
-import type { JSX } from "react";
-
 import type { ReactElement } from 'react';
 
 const Logo = (): ReactElement => {
