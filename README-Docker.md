@@ -72,3 +72,60 @@ If you make changes to Dockerfiles:
 ```bash
 docker-compose up --build
 ```
+
+# Comet Ring - Docker Hub Deployment
+
+## Quick Start
+
+```bash
+# 1. Download docker-compose file
+curl -o docker-compose.yml https://raw.githubusercontent.com/yourname/comet-ring/main/docker-compose.hub.yml
+
+# 2. (Optional) Set environment variables
+export JWT_SECRET=your-secret-key
+
+# 3. Run the stack
+docker-compose up -d
+
+# 4. Seed database (optional)
+docker-compose exec backend npm run seed
+```
+
+## Access
+- Frontend: http://localhost
+- Backend API: http://localhost:4000/api
+- Admin login: admin@cometring.com
+
+## Services
+- `anhtiencry/comet-ring:backend` - Node.js API (269 MB)
+- `anhtiencry/comet-ring:frontend` - React + Nginx (80 MB)
+- `mongo:7.0` - MongoDB database
+
+## Ports
+- 80: Frontend (nginx)
+- 4000: Backend API
+- 27017: MongoDB (internal only)
+
+## Volumes
+- `mongo_data`: MongoDB persistent storage
+- `uploads_data`: User uploaded images
+
+## Environment Variables
+- `JWT_SECRET`: JWT signing secret (change in production!)
+- `MONGODB_URI`: MongoDB connection string
+- `BACKEND_URL`: Backend public URL
+
+## Management Commands
+```bash
+# View logs
+docker-compose logs -f backend
+
+# Restart service
+docker-compose restart backend
+
+# Stop all
+docker-compose down
+
+# Remove all data
+docker-compose down -v
+```
