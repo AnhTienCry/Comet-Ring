@@ -79,7 +79,7 @@ jobs:
       - name: Build
         working-directory: ./frontend
         env:
-          VITE_API_BASE_URL: http://44.200.87.177:4000/api
+          VITE_API_BASE_URL: http://${{ secrets.EC2_HOST }}:4000/api
         run: npm run build
 
   # Job 3: Build and Push Docker Images
@@ -111,8 +111,6 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:buildcache,mode=max
 
       - name: Build and push Frontend
         uses: docker/build-push-action@v5
@@ -121,12 +119,10 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           build-args: |
-            VITE_API_BASE_URL=http://44.200.87.177:4000/api
+            VITE_API_BASE_URL=http://${{ secrets.EC2_HOST }}:4000/api
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:buildcache,mode=max
 
   # Job 4: Deploy to EC2
   deploy:
@@ -139,163 +135,80 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # STEP 1 — Decode Base64 PEM → id_rsa
+      - name: Decode SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY_BASE64 }}" | base64 -d > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      # STEP 2 — Start SSH Agent
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ~/.ssh/id_rsa
+
+      - name: Add EC2 to known_hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
       - name: Create deployment files
         run: |
           mkdir -p deploy
           
-          # Copy docker-compose file
           cat > deploy/docker-compose.yml << 'EOF'
           version: '3.8'
-
           services:
             mongo:
               image: mongo:7.0
-              container_name: comet-ring-mongo
               restart: unless-stopped
-              environment:
-                MONGO_INITDB_DATABASE: comet-ring
               volumes:
                 - mongo_data:/data/db
-              networks:
-                - comet-ring-network
 
             backend:
               image: ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-backend:latest
-              container_name: comet-ring-backend
-              restart: unless-stopped
               ports:
                 - "4000:4000"
               environment:
-                - NODE_ENV=production
-                - MONGODB_URI=mongodb://mongo:27017/comet-ring
                 - JWT_SECRET=${{ secrets.JWT_SECRET }}
-                - BACKEND_URL=http://44.200.87.177:4000
-              depends_on:
-                - mongo
-              volumes:
-                - uploads_data:/app/uploads
-              networks:
-                - comet-ring-network
+                - MONGODB_URI=mongodb://mongo:27017/comet-ring
 
             frontend:
               image: ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-frontend:latest
-              container_name: comet-ring-frontend
-              restart: unless-stopped
               ports:
                 - "80:80"
-              depends_on:
-                - backend
-              networks:
-                - comet-ring-network
 
           volumes:
             mongo_data:
-            uploads_data:
-
-          networks:
-            comet-ring-network:
-              driver: bridge
           EOF
-          
-          # Create deploy script
+
           cat > deploy/deploy.sh << 'EOF'
           #!/bin/bash
           set -e
-          
-          echo "🚀 Starting deployment..."
-          
           cd /home/ubuntu/comet-ring
-          
-          # Pull latest images
-          echo "📥 Pulling Docker images..."
           docker compose pull
-          
-          # Stop old containers
-          echo "🛑 Stopping old containers..."
           docker compose down
-          
-          # Start new containers
-          echo "▶️  Starting new containers..."
           docker compose up -d
-          
-          # Wait for services
-          echo "⏳ Waiting for services to start..."
-          sleep 15
-          
-          # Health check
-          echo "🏥 Running health check..."
-          if curl -f http://localhost:4000/api/health; then
-            echo "✅ Backend is healthy"
-          else
-            echo "⚠️  Backend health check failed"
-          fi
-          
-          if curl -f http://localhost/; then
-            echo "✅ Frontend is healthy"
-          else
-            echo "⚠️  Frontend health check failed"
-          fi
-          
-          # Show running containers
-          echo "📊 Running containers:"
-          docker compose ps
-          
-          # Cleanup old images
-          echo "🧹 Cleaning up old images..."
-          docker image prune -af --filter "until=24h"
-          
-          echo "✅ Deployment completed!"
           EOF
-          
+
           chmod +x deploy/deploy.sh
 
-      - name: Setup SSH agent
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
-
-      - name: Add EC2 host to known_hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
- 
       - name: Copy files to EC2
         run: |
-          scp -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USERNAME }}/comet-ring/
+          ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "mkdir -p ~/comet-ring"
+          scp -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/comet-ring/
+
       - name: Deploy on EC2
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} 'cd /home/ubuntu/comet-ring && bash deploy.sh'
+          ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "cd ~/comet-ring && bash deploy.sh"
 
       - name: Verify deployment
         run: |
-          echo "🏥 Verifying deployment..."
           sleep 5
-          
-          # Check backend
-          if curl -f http://${{ secrets.EC2_HOST }}:4000/api/health; then
-            echo "✅ Backend is accessible"
-          else
-            echo "❌ Backend is not accessible"
-            exit 1
-          fi
-          
-          # Check frontend
-          if curl -f http://${{ secrets.EC2_HOST }}/; then
-            echo "✅ Frontend is accessible"
-          else
-            echo "❌ Frontend is not accessible"
-            exit 1
-          fi
-
-      - name: Cleanup
-        if: always()
-        run: echo "Cleanup complete"
+          curl -f http://${{ secrets.EC2_HOST }}:4000/api/health
+          curl -f http://${{ secrets.EC2_HOST }}
 
       - name: Deployment summary
         run: |
-          echo "🎉 Deployment Summary"
-          echo "===================="
-          echo "✅ Docker images built and pushed"
-          echo "✅ Deployed to EC2: ${{ secrets.EC2_HOST }}"
-          echo "🌐 Frontend: http://${{ secrets.EC2_HOST }}"
-          echo "🔌 API: http://${{ secrets.EC2_HOST }}:4000"
+          echo "Deployment complete!"
+          echo "Frontend: http://${{ secrets.EC2_HOST }}"
+          echo "Backend:  http://${{ secrets.EC2_HOST }}:4000"
