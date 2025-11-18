@@ -6,8 +6,13 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-# Copy source and build
+# Copy source
 COPY . .
+
+# Ensure public exists so later COPY --from=builder won't fail
+RUN mkdir -p /app/public
+
+# Build project
 RUN npm run build
 
 # Runtime image (slim)
@@ -24,7 +29,7 @@ RUN npm ci --only=production
 
 # Copy built files
 COPY --from=builder /app/dist ./dist
-# If you need public/static files, copy them too:
+# Copy public/static files (now guaranteed to exist)
 COPY --from=builder /app/public ./public/
 
 EXPOSE 4000
