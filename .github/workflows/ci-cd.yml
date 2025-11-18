@@ -136,19 +136,24 @@ jobs:
         uses: actions/checkout@v4
 
       # STEP 1 — Decode Base64 PEM → id_rsa
-      - name: Decode SSH Key
+      - name: Write SSH key and add host
         run: |
-          echo "${{ secrets.EC2_SSH_KEY_BASE64 }}" | base64 -d > ~/.ssh/id_rsa
+          set -e
+          # ensure directory exists
+          mkdir -p ~/.ssh
+
+          # Support two secret formats:
+          # - EC2_SSH_KEY_B64: base64-encoded private key (if you uploaded encoded)
+          # - EC2_SSH_KEY: raw PEM private key (recommended)
+          if [ -n "${{ secrets.EC2_SSH_KEY_B64 }}" ]; then
+            echo "Decoding base64 SSH key into ~/.ssh/id_rsa"
+            echo "${{ secrets.EC2_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/id_rsa
+          else
+            echo "Writing raw SSH key into ~/.ssh/id_rsa (stripping CRLF)"
+            printf "%s" "${{ secrets.EC2_SSH_KEY }}" | sed 's/\r$//' > ~/.ssh/id_rsa
+          fi
+
           chmod 600 ~/.ssh/id_rsa
-
-      # STEP 2 — Start SSH Agent
-      - name: Setup SSH agent
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ~/.ssh/id_rsa
-
-      - name: Add EC2 to known_hosts
-        run: |
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
       - name: Create deployment files
@@ -194,12 +199,12 @@ jobs:
 
       - name: Copy files to EC2
         run: |
-          ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "mkdir -p ~/comet-ring"
-          scp -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/comet-ring/
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "mkdir -p ~/comet-ring"
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:~/comet-ring/
 
       - name: Deploy on EC2
         run: |
-          ssh ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "cd ~/comet-ring && bash deploy.sh"
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "cd ~/comet-ring && bash deploy.sh"
 
       - name: Verify deployment
         run: |
