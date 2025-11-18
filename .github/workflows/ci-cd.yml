@@ -249,8 +249,8 @@ jobs:
           
           chmod +x deploy/deploy.sh
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.8.1
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
@@ -264,10 +264,7 @@ jobs:
           scp -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USERNAME }}/comet-ring/
       - name: Deploy on EC2
         run: |
-          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
-            cd /home/ubuntu/comet-ring
-            bash deploy.sh
-          ENDSSH
+          ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} 'cd /home/ubuntu/comet-ring && bash deploy.sh'
 
       - name: Verify deployment
         run: |
@@ -292,7 +289,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -f ~/.ssh/id_rsa
+        run: echo "Cleanup complete"
 
       - name: Deployment summary
         run: |
