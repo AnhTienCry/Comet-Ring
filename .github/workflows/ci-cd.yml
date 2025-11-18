@@ -50,7 +50,7 @@ jobs:
           MONGODB_URI: mongodb://localhost:27017/comet-ring-test
           JWT_SECRET: test-secret
           NODE_ENV: test
-        run: npm test -- --passWithNoTests
+        run: npm test
 
   # Job 2: Test Frontend
   test-frontend:
@@ -74,7 +74,7 @@ jobs:
 
       - name: Run tests
         working-directory: ./frontend
-        run: npm test -- --passWithNoTests --run
+        run: npm test
 
       - name: Build
         working-directory: ./frontend
