@@ -1,21 +1,32 @@
-FROM node:20-alpine
+FROM node:20 AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files and install ALL deps for build
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm install
-
-# Copy source code
+# Copy source and build
 COPY . .
-
-# Build TypeScript -> dist/
 RUN npm run build
 
-# Expose backend port
+# Runtime image (slim)
+FROM node:20-alpine AS runtime
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Copy package.json & production deps metadata
+COPY --from=builder /app/package*.json ./
+
+# Install only production deps (ensure network in build environment)
+RUN npm ci --only=production
+
+# Copy built files
+COPY --from=builder /app/dist ./dist
+# If you need public/static files, copy them too:
+COPY --from=builder /app/public ./public || true
+
 EXPOSE 4000
 
-# Start the server
-CMD ["npm", "run", "start"]
+CMD ["node", "dist/index.js"]
