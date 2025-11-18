@@ -1,0 +1,302 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  BACKEND_IMAGE: comet-ring-backend
+  FRONTEND_IMAGE: comet-ring-frontend
+
+jobs:
+  # Job 1: Test Backend
+  test-backend:
+    name: Test Backend
+    runs-on: ubuntu-latest
+    
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ./backend
+        env:
+          MONGODB_URI: mongodb://localhost:27017/comet-ring-test
+          JWT_SECRET: test-secret
+          NODE_ENV: test
+        run: npm test -- --passWithNoTests
+
+  # Job 2: Test Frontend
+  test-frontend:
+    name: Test Frontend
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ./frontend
+        run: npm test -- --passWithNoTests --run
+
+      - name: Build
+        working-directory: ./frontend
+        env:
+          VITE_API_BASE_URL: http://47.129.194.120:4000/api
+        run: npm run build
+
+  # Job 3: Build and Push Docker Images
+  build-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:buildcache,mode=max
+
+      - name: Build and push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=http://47.129.194.120:4000/api
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:buildcache,mode=max
+
+  # Job 4: Deploy to EC2
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create deployment files
+        run: |
+          mkdir -p deploy
+          
+          # Copy docker-compose file
+          cat > deploy/docker-compose.yml << 'EOF'
+          version: '3.8'
+
+          services:
+            mongo:
+              image: mongo:7.0
+              container_name: comet-ring-mongo
+              restart: unless-stopped
+              environment:
+                MONGO_INITDB_DATABASE: comet-ring
+              volumes:
+                - mongo_data:/data/db
+              networks:
+                - comet-ring-network
+
+            backend:
+              image: ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-backend:latest
+              container_name: comet-ring-backend
+              restart: unless-stopped
+              ports:
+                - "4000:4000"
+              environment:
+                - NODE_ENV=production
+                - MONGODB_URI=mongodb://mongo:27017/comet-ring
+                - JWT_SECRET=${{ secrets.JWT_SECRET }}
+                - BACKEND_URL=http://47.129.194.120:4000
+              depends_on:
+                - mongo
+              volumes:
+                - uploads_data:/app/uploads
+              networks:
+                - comet-ring-network
+
+            frontend:
+              image: ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-frontend:latest
+              container_name: comet-ring-frontend
+              restart: unless-stopped
+              ports:
+                - "80:80"
+              depends_on:
+                - backend
+              networks:
+                - comet-ring-network
+
+          volumes:
+            mongo_data:
+            uploads_data:
+
+          networks:
+            comet-ring-network:
+              driver: bridge
+          EOF
+          
+          # Create deploy script
+          cat > deploy/deploy.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          echo "🚀 Starting deployment..."
+          
+          cd /home/ubuntu/comet-ring
+          
+          # Pull latest images
+          echo "📥 Pulling Docker images..."
+          docker compose pull
+          
+          # Stop old containers
+          echo "🛑 Stopping old containers..."
+          docker compose down
+          
+          # Start new containers
+          echo "▶️  Starting new containers..."
+          docker compose up -d
+          
+          # Wait for services
+          echo "⏳ Waiting for services to start..."
+          sleep 15
+          
+          # Health check
+          echo "🏥 Running health check..."
+          if curl -f http://localhost:4000/api/health; then
+            echo "✅ Backend is healthy"
+          else
+            echo "⚠️  Backend health check failed"
+          fi
+          
+          if curl -f http://localhost/; then
+            echo "✅ Frontend is healthy"
+          else
+            echo "⚠️  Frontend health check failed"
+          fi
+          
+          # Show running containers
+          echo "📊 Running containers:"
+          docker compose ps
+          
+          # Cleanup old images
+          echo "🧹 Cleaning up old images..."
+          docker image prune -af --filter "until=24h"
+          
+          echo "✅ Deployment completed!"
+          EOF
+          
+          chmod +x deploy/deploy.sh
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to EC2
+        run: |
+          scp -i ~/.ssh/id_rsa -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USERNAME }}/comet-ring/
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            cd /home/ubuntu/comet-ring
+            bash deploy.sh
+          ENDSSH
+
+      - name: Verify deployment
+        run: |
+          echo "🏥 Verifying deployment..."
+          sleep 5
+          
+          # Check backend
+          if curl -f http://${{ secrets.EC2_HOST }}:4000/api/health; then
+            echo "✅ Backend is accessible"
+          else
+            echo "❌ Backend is not accessible"
+            exit 1
+          fi
+          
+          # Check frontend
+          if curl -f http://${{ secrets.EC2_HOST }}/; then
+            echo "✅ Frontend is accessible"
+          else
+            echo "❌ Frontend is not accessible"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
+
+      - name: Deployment summary
+        run: |
+          echo "🎉 Deployment Summary"
+          echo "===================="
+          echo "✅ Docker images built and pushed"
+          echo "✅ Deployed to EC2: ${{ secrets.EC2_HOST }}"
+          echo "🌐 Frontend: http://${{ secrets.EC2_HOST }}"
+          echo "🔌 API: http://${{ secrets.EC2_HOST }}:4000"
