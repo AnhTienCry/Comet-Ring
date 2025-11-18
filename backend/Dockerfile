@@ -1,27 +1,21 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install all dependencies (including dev dependencies for build)
-RUN npm ci
+# Install dependencies
+RUN npm install
 
 # Copy source code
 COPY . .
 
-# Build the app
+# Build TypeScript -> dist/
 RUN npm run build
 
-# Remove dev dependencies
-RUN npm prune --production
-
-# Create uploads directory
-RUN mkdir -p uploads
-
-# Expose port
+# Expose backend port
 EXPOSE 4000
 
-# Start the app
-CMD ["npm", "start"]
+# Start the server
+CMD ["npm", "run", "start"]
