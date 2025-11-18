@@ -79,7 +79,7 @@ jobs:
       - name: Build
         working-directory: ./frontend
         env:
-          VITE_API_BASE_URL: http://47.129.194.120:4000/api
+          VITE_API_BASE_URL: http://44.200.87.177:4000/api
         run: npm run build
 
   # Job 3: Build and Push Docker Images
@@ -121,7 +121,7 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           build-args: |
-            VITE_API_BASE_URL=http://47.129.194.120:4000/api
+            VITE_API_BASE_URL=http://44.200.87.177:4000/api
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
@@ -169,7 +169,7 @@ jobs:
                 - NODE_ENV=production
                 - MONGODB_URI=mongodb://mongo:27017/comet-ring
                 - JWT_SECRET=${{ secrets.JWT_SECRET }}
-                - BACKEND_URL=http://47.129.194.120:4000
+                - BACKEND_URL=http://44.200.87.177:4000
               depends_on:
                 - mongo
               volumes:
@@ -250,16 +250,18 @@ jobs:
           chmod +x deploy/deploy.sh
 
       - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.1
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add EC2 host to known_hosts
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
-
+ 
       - name: Copy files to EC2
         run: |
-          scp -i ~/.ssh/id_rsa -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USERNAME }}/comet-ring/
-
+          scp -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USERNAME }}/comet-ring/
       - name: Deploy on EC2
         run: |
           ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
