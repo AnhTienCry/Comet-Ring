@@ -25,7 +25,7 @@ RUN npm ci --only=production
 # Copy built files
 COPY --from=builder /app/dist ./dist
 # If you need public/static files, copy them too:
-COPY --from=builder /app/public ./public || true
+COPY --from=builder /app/public ./public/
 
 EXPOSE 4000
 
