@@ -13,7 +13,10 @@ env:
   FRONTEND_IMAGE: comet-ring-frontend
 
 jobs:
-  # Job 1: Test Backend
+
+  # -------------------------------
+  # 1) BACKEND TESTS
+  # -------------------------------
   test-backend:
     name: Test Backend
     runs-on: ubuntu-latest
@@ -23,12 +26,7 @@ jobs:
         image: mongo:7.0
         ports:
           - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,22 +36,22 @@ jobs:
           cache: 'npm'
           cache-dependency-path: backend/package-lock.json
 
-      - name: Install dependencies
+      - name: Install backend deps
         working-directory: backend
         run: npm ci
 
       - name: Run backend tests
         working-directory: backend
-        env:
-          MONGODB_URI: mongodb://localhost:27017/comet-ring-test
         run: npm test
 
 
-  # Job 2: Test Frontend
+  # -------------------------------
+  # 2) FRONTEND TESTS + BUILD
+  # -------------------------------
   test-frontend:
     name: Test Frontend
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +61,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
+      - name: Install frontend deps
         working-directory: frontend
         run: npm ci
 
@@ -78,7 +76,9 @@ jobs:
         run: npm run build
 
 
-  # Job 3: Build & Push Docker Images
+  # -------------------------------
+  # 3) BUILD & PUSH DOCKER IMAGES
+  # -------------------------------
   build-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
@@ -95,7 +95,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push Backend
+      - name: Build & push backend
         uses: docker/build-push-action@v5
         with:
           context: backend
@@ -104,7 +104,7 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-backend:latest
 
-      - name: Build & Push Frontend
+      - name: Build & push frontend
         uses: docker/build-push-action@v5
         with:
           context: frontend
@@ -116,7 +116,9 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-frontend:latest
 
 
-  # Job 4: Deploy to EC2
+  # -------------------------------
+  # 4) DEPLOY TO EC2
+  # -------------------------------
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
@@ -126,11 +128,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # STEP 1: Fix SSH key
+      # Step 1: Prepare SSH Key
       - name: Prepare SSH key
         run: |
           mkdir -p ~/.ssh
-          
+
           if [ -n "${{ secrets.EC2_SSH_KEY_BASE64 }}" ]; then
             echo "${{ secrets.EC2_SSH_KEY_BASE64 }}" | base64 -d > ~/.ssh/id_rsa
           else
@@ -141,31 +143,44 @@ jobs:
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
 
-      # STEP 2: Auto install Docker + Docker Compose (nếu chưa có)
+      # Step 2: Auto-install Docker + Fix Permission (no reboot needed)
       - name: Install Docker & Docker Compose on EC2
         run: |
-          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no \
+          ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "
             set -e
-            if ! command -v docker >/dev/null 2>&1; then
+
+            echo '▶ Checking Docker...'
+            if ! command -v docker >/dev/null; then
               echo 'Installing Docker...'
               curl -fsSL https://get.docker.com | sh
             fi
 
-            if ! command -v docker-compose >/dev/null 2>&1; then
+            echo '▶ Checking Docker Compose...'
+            if ! command -v docker compose >/dev/null; then
               echo 'Installing Docker Compose...'
-              sudo curl -L 'https://github.com/docker/compose/releases/latest/download/docker-compose-Linux-x86_64' -o /usr/local/bin/docker-compose
+              sudo curl -L \
+                'https://github.com/docker/compose/releases/latest/download/docker-compose-Linux-x86_64' \
+                -o /usr/local/bin/docker-compose
               sudo chmod +x /usr/local/bin/docker-compose
             fi
+
+            echo '▶ Fix Docker permissions'
+            sudo usermod -aG docker \$USER || true
+            sudo chown root:docker /var/run/docker.sock || true
+            sudo chmod 660 /var/run/docker.sock || true
+
+            echo '▶ Force apply docker group'
+            exec sg docker 'echo Docker group applied'
           "
 
 
-      # STEP 3: Upload docker-compose.yml + deploy script
+      # Step 3: Upload deployment files
       - name: Upload deployment files
         run: |
           mkdir -p deploy
 
           cat > deploy/docker-compose.yml << 'EOF'
-          version: '3.8'
           services:
             mongo:
               image: mongo:7.0
@@ -174,15 +189,15 @@ jobs:
                 - mongo_data:/data/db
 
             backend:
-              image: ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-backend:latest
+              image: DOCKERHUB_USERNAME/comet-ring-backend:latest
               ports:
                 - "4000:4000"
               environment:
-                - JWT_SECRET=${{ secrets.JWT_SECRET }}
+                - JWT_SECRET=JWT_SECRET_VALUE
                 - MONGODB_URI=mongodb://mongo:27017/comet-ring
 
             frontend:
-              image: ${{ secrets.DOCKERHUB_USERNAME }}/comet-ring-frontend:latest
+              image: DOCKERHUB_USERNAME/comet-ring-frontend:latest
               ports:
                 - "80:80"
 
@@ -190,30 +205,27 @@ jobs:
             mongo_data:
           EOF
 
-          cat > deploy/deploy.sh << 'EOF'
-          #!/bin/bash
-          set -e
-          cd /home/ubuntu/comet-ring
-          docker-compose pull
-          docker-compose down
-          docker-compose up -d
-          EOF
+          sed -i "s|DOCKERHUB_USERNAME|${{ secrets.DOCKERHUB_USERNAME }}|g" deploy/docker-compose.yml
+          sed -i "s|JWT_SECRET_VALUE|${{ secrets.JWT_SECRET }}|g" deploy/docker-compose.yml
 
-          chmod +x deploy/deploy.sh
-
-          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r deploy/* ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/ubuntu/comet-ring/
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -r deploy/* \
+            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }}:/home/ubuntu/comet-ring/
 
 
-      # STEP 4: Run deployment
-      - name: Deploy on EC2
+      # Step 4: Run deployment on EC2
+      - name: Deploy services
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no \
-            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} \
-            "cd /home/ubuntu/comet-ring && bash deploy.sh"
+          ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} "
+            cd /home/ubuntu/comet-ring
+            docker compose pull
+            docker compose down
+            docker compose up -d
+          "
 
 
-      # STEP 5: Verify
-      - name: Verify Deployment
+      # Step 5: Verify
+      - name: Verify deployment
         run: |
           sleep 5
           curl -f http://${{ secrets.EC2_HOST }}:4000/api/health
@@ -221,6 +233,6 @@ jobs:
 
       - name: Summary
         run: |
-          echo "🚀 Deployment successful!"
-          echo "Frontend: http://${{ secrets.EC2_HOST }}"
-          echo "Backend:  http://${{ secrets.EC2_HOST }}:4000"
+          echo "🎉 Deployment successful!"
+          echo "🌐 Frontend: http://${{ secrets.EC2_HOST }}"
+          echo "🔌 Backend:  http://${{ secrets.EC2_HOST }}:4000"
